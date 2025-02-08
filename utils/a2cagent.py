@@ -34,13 +34,13 @@ class A2CAgent(object):
         critic = self.critic
         actor.train()
         critic.train()
-        num_agents = args['num_agents']
+        num_agents = 1 if step == 0 else 2
         actor_optim = optim.Adam(actor.parameters(), lr=args['actor_net_lr'])
         critic_optim = optim.Adam(critic.parameters(), lr=args['critic_net_lr'])
         s_t = time.time()
         print("training started")
         env.input_data = data.cpu().numpy()
-        state, avail_actions = env.reset(size_n=size_n)
+        state, avail_actions = env.reset(size_n=size_n, num_agents = num_agents)
         # [b_s, hidden_dim, n_nodes]
         data = data[:, :, :2]
         static_hidden = actor.emd_stat(data, size_n=size_n).permute(0, 2, 1)
@@ -108,14 +108,16 @@ class A2CAgent(object):
                     logs.append(logp.unsqueeze(1))
                     actions[k].append(idx.unsqueeze(1))
                     probs.append(prob.unsqueeze(1))
-
+            if time_step >= 180:
+                print(1)
             state, avail_actions, ter, time_vec_truck, time_vec_drone = env.step(idx_truck_list, idx_drone_list,
                                                                                  time_vec_truck, time_vec_drone,
                                                                                  ter)
             time_step += 1
         # print("epochs: ", i)
-        if epoch % 10 == 0 and (step == 0 or step == args['iter_steps'] - 1):
-            self.draw(data, actions, size_n, idx_regions, epoch, step)
+        print("terminated: ", ter.all())
+        # if epoch % 10 == 0 and (step == 0 or step == args['iter_steps'] - 1):
+        #     self.draw(data, actions, size_n, idx_regions, epoch, step)
         # actions = torch.cat(actions, dim=1)  # (batch_size, seq_len)
         logs = torch.cat(logs, dim=1)  # (batch_size, seq_len)
         # Query the critic for an estimate of the reward
@@ -140,7 +142,7 @@ class A2CAgent(object):
         #     tb_logger.log_value('grad_norm', grad_norms, i)
         # actor_optim.step()
         critic_optim.zero_grad()
-        critic_loss.backward()
+        critic_loss.backward(retain_graph=True)
         torch.nn.utils.clip_grad_norm_(critic.parameters(), args['max_grad_norm'])
         critic_optim.step()
 

@@ -79,7 +79,8 @@ class Env(object):
         self.num_agents = args['num_agents']
         print("Using Not revisiting nodes")
 
-    def reset(self, size_n = None):
+    def reset(self, size_n = None, num_agents = None):
+        self.num_agents = num_agents
         self.size_n = size_n
         self.batch_size = self.input_data[:, :, :2].shape[0]
         self.input_pnt = self.input_data[:, :, :2]
@@ -93,17 +94,18 @@ class Env(object):
                 self.dist_mat[:, j, i] = self.dist_mat[:, i, j]
         avail_actions = np.ones([self.batch_size, self.n_nodes, self.num_agents, 2], dtype=np.float32)
         avail_actions[:, 0, :, :] = np.zeros([self.batch_size, self.num_agents, 2])
-        for i in range(self.input_data.shape[0]):
-            avail_actions[i, size_n[i]:, :, :] = 0
         self.drone_mat = self.dist_mat / self.v_d
         self.state = np.ones([self.batch_size, self.n_nodes])
         self.state[:, 0] = np.zeros([self.batch_size])
+        for i in range(self.input_data.shape[0]):
+            avail_actions[i, size_n[i]:, :, :] = 0
+            self.state[i, size_n[i]:] = 1
         self.sortie = np.zeros([self.batch_size, self.num_agents])
         self.returned = np.ones([self.batch_size, self.num_agents])
         self.current_time = np.zeros(self.batch_size)
         self.agent_time = np.zeros([self.batch_size, self.num_agents])
-        self.truck_loc = np.ones([self.batch_size, self.num_agents], dtype=np.int32) * (self.n_nodes - 1)
-        self.drone_loc = np.ones([self.batch_size, self.num_agents], dtype=np.int32) * (self.n_nodes - 1)
+        self.truck_loc = np.ones([self.batch_size, self.num_agents], dtype=np.int32) * 0
+        self.drone_loc = np.ones([self.batch_size, self.num_agents], dtype=np.int32) * 0
 
         dynamic = np.zeros([self.batch_size, self.n_nodes, self.num_agents, 2], dtype=np.float32)
         for i in range(self.num_agents):
@@ -151,12 +153,11 @@ class Env(object):
         terminated = np.ones(self.batch_size, dtype=int)
         agent_terminated = np.zeros([self.batch_size, self.num_agents], dtype=int)
         for i in range(self.num_agents):
-            # time_vec_truck大于0说明truck行驶到下一个node的时间比drone长
+            # time_vec_truck是truck到达下一个node的时间，time_vec_drone是drone到达下一个node的时间
             time_vec_truck[:, i, 1] += np.logical_and(np.equal(time_vec_truck[:, i, 1], np.zeros(self.batch_size)),
                                                    np.greater(t_truck[i], np.zeros(self.batch_size))).astype(int) * (
                                                 t_truck[i] - time_step) - \
                                     np.greater(time_vec_truck[:, i, 1], np.zeros(self.batch_size)) * (time_step)
-            # time_vec_drone大于0说明drone行驶到下一个node的时间比truck长
             time_vec_drone[:, i, 1] += np.logical_and(np.equal(time_vec_drone[:, i, 1], np.zeros(self.batch_size)),
                                                    np.greater(t_drone[i], np.zeros(self.batch_size))).astype(int) * (
                                                 t_drone[i] - time_step) - \
@@ -173,9 +174,9 @@ class Env(object):
                                                   np.greater(time_vec_drone[:, i, 1], np.zeros(self.batch_size))) * idx_drone[i].cpu().numpy()
 
             # update demand because of turck and drone
-            # b_s是truck通过这次action能够抵达的instance索引
-            b_s = np.where(np.equal(time_vec_truck[:, i, 1], np.zeros(self.batch_size)))[0]
-            b_s = np.where(~np.equal(time_vec_truck[:, i, 0], np.ones(self.batch_size) * (self.n_nodes - 1)))[0]
+            # 此处的b_s是truck没有回到仓库的instance索引
+            b_s = np.where(~np.equal(time_vec_truck[:, i, 0], np.ones(self.batch_size) * 0))[0]
+            # truck到了的地方
             self.state[b_s, idx_truck[i][b_s].cpu()] = np.zeros(len(b_s))
             # drone到了的地方
             idx_satis = np.where(np.less(self.sortie[:, i] - np.equal(time_vec_drone[:, i, 1], 0), np.zeros(self.batch_size)))[0]
@@ -232,9 +233,22 @@ class Env(object):
             avail_actions[b_s, self.drone_loc[b_s, i], i, 1] = 1
 
             # for truck that finished action select any node with customer demand
-            # 如果货车结束行动了，所有没到达的地方都是available的（这段ok）
-            b_s = np.where(np.expand_dims(time_vec_truck[:, i, 1], 1) == 0)[0]
+            # 如果货车结束行动了，而无人机不到货车的地方，或者无人机也到了货车的地方，则所有没到达的地方都是available的（这段ok）
+            a = np.equal(np.equal(time_vec_truck[:, i, 1], 0).astype(int) + np.equal(time_vec_drone[:, i, 1], 0).astype(int) + (idx_drone[0] == idx_truck[0]).cpu().numpy().astype(int), 3)
+            b_s = np.where(np.expand_dims(a, 1))[0]
             avail_actions[b_s, :, i, 0] += np.greater(self.state[b_s, :], 0)
+            # 货车结束行动了，而无人机不到货车的地方
+            a = np.equal(np.equal(time_vec_truck[:, i, 1], 0).astype(int) + (~np.equal(idx_truck[0].cpu().numpy(), time_vec_drone[:, i, 0])).astype(int), 2)
+            b_s = np.where(np.expand_dims(a, 1))[0]
+            avail_actions[b_s, :, i, 0] += np.greater(self.state[b_s, :], 0)
+
+            # 如果货车结束行动，而无人机要到货车的地方且没到，则还是设置货车只能在原地等待
+            a = np.equal(
+                np.equal(time_vec_truck[:, i, 1], 0).astype(int) + np.greater(time_vec_drone[:, i, 1], 0).astype(int) + (
+                            idx_drone[0] == idx_truck[0]).cpu().numpy().astype(int), 3)
+            b_s = np.where(np.expand_dims(a, 1))[0]
+            avail_actions[b_s, :, i, 0] = 0
+            avail_actions[b_s, self.truck_loc[b_s, i], i, 0] = 1
 
             # if there is expected visit by drone to that customer node with sortie =0
             # don't make that node available to truck
@@ -305,5 +319,7 @@ class Env(object):
             self.agent_time[b_s, i] = self.current_time[b_s]
             agent_terminated[:, i] = np.logical_and(agent_terminated[:, i], np.logical_and(np.equal(self.truck_loc[:, i], 0),
                                         np.equal(self.drone_loc[:, i], 0)).astype(int))
-
+        # 最后的不能取
+        for i in range(self.input_data.shape[0]):
+            avail_actions[i, self.size_n[i]:, :, :] = 0
         return dynamic, avail_actions, terminated, time_vec_truck, time_vec_drone

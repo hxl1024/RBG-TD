@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="Black">
+    <option name="sdkName" value="Remote Python 3.10.13 (sftp://huxiaolong@222.201.144.190:50102/opt/miniconda3/envs/pytorch-2.1.1-hxl/bin/python)" />
+  </component>
+  <component name="ProjectRootManager" version="2" project-jdk-name="Remote Python 3.10.13 (sftp://huxiaolong@222.201.144.190:50102/opt/miniconda3/envs/pytorch-2.1.1-hxl/bin/python)" project-jdk-type="Python SDK" />
+  <component name="PythonCompatibilityInspectionAdvertiser">
+    <option name="version" value="3" />
+  </component>
+</project>

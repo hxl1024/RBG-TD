@@ -42,6 +42,7 @@ class RegionAndSolution(object):
         for i in range(max_epochs):
             # 每个epoch训练
             loc_data, depot_data = dataGen.get_train_next()
+
             batch_size = len(loc_data)
             # 使用K-means算法初始化region
             init_regions = [K_means(node, K, args['beta'], args['Kmeans_iter']) for node in loc_data]
@@ -50,44 +51,31 @@ class RegionAndSolution(object):
             regions = [[] for i in range(batch_size)]
             remain_regions = [[] for i in range(batch_size)]
             remain_costs = torch.zeros(batch_size)
+
+            # 根据region id范围，给每个region的subregion加上depot（这里能不能不用for呢）
+            for j in range(len(idx_regions) - 1):
+                for k in range(idx_regions[j], idx_regions[j + 1]):
+                    init_regions[j][k - idx_regions[j]] = torch.cat(
+                        (torch.from_numpy(depot_data[j]), init_regions[j][k - idx_regions[j]]), dim=0)
+            regions0 = []
+            # regions0是region集合（list）
+            for region in init_regions:
+                regions0 = regions0 + region
+            if args['train_selection_only']:
+                costs, ll, pi = self.merge_judge(regions0, args['device'], cal_ll=True, args=args)
+            else:
+                costs, loss1, critic_loss, actions, critic_est = self.merge_train(regions0, args['device'], i, 0, idx_regions, cal_ll=True, args=args, tb_logger=tb_logger)
             for step in tqdm(range(args['iter_steps'])):
-                # 根据region id范围，给每个region的subregion加上depot（这里能不能不用for呢）
-                for j in range(len(idx_regions) - 1):
-                    for k in range(idx_regions[j], idx_regions[j + 1]):
-                        init_regions[j][k - idx_regions[j]] = torch.cat(
-                            (torch.from_numpy(depot_data[j]), init_regions[j][k - idx_regions[j]]), dim=0)
-                regions0 = []
-                # regions0是region集合（list）
-                for region in init_regions:
-                    regions0 = regions0 + region
-                if args['train_selection_only']:
-                    costs1, ll, pi = self.merge_judge(regions0, args['device'], cal_ll=True, args=args)
-                else:
-                    R, loss1, critic_loss, actions, critic_est = self.merge_train(regions0, args['device'], i, step, idx_regions, cal_ll=True, args=args, tb_logger=tb_logger)
-
-                # 将region根据actions分成两部分
-                part_regions = pi2regions(regions0, actions)
-                costs1 = R
-                if step == 0:
-                    regions2 = divide_region(part_regions)
-                    costss1 = parse_idx(costs1, idx_regions, dim=0)  # [(num_regions1)]*multiple
-                else:
-                    should_update = costs1 < merged_costs1 * (1 + args['up_rate_train'])  # shape=(num_regions1,)
-                    assert len(merged_regions2) == len(part_regions) * 2, 'mismatch of len of regions'
-                    regions2 = divide_and_update_region(part_regions, merged_regions2, should_update)
-
-                    costss1 = parse_idx(torch.where(should_update, costs1, merged_costs1), idx_regions,
-                                        dim=0)  # [(num_regions1)]*multiple
-
                 if step >= 1:
-                    if args['enable_running_cost']:
-                        loss2 = ((costs1 - merged_costs1 - running_cost) * logits2).mean()
+                    if args['train_selection_only']:
+                        costs, ll, pi = self.merge_judge(merged_region, args['device'], cal_ll=True, args=args)
                     else:
-                        loss2 = ((costs1 - merged_costs1) * logits2).mean()
-                    running_cost = running_cost * args['running_cost_alpha'] + (1 - args['running_cost_alpha']) * (
-                            costs1 - merged_costs1).mean().item()
-                    # # print('running_cost=', running_cost, 'costs1=', costs1.mean().item(), ', merged_costs1=',
-                    #       merged_costs1.mean().item())
+                        costs, loss1, critic_loss, actions, critic_est = self.merge_train(merged_region, args['device'], i,
+                                                                                          step, idx_regions,
+                                                                                          cal_ll=True, args=args,
+                                                                                          tb_logger=tb_logger)
+                    part_regions = pi2regions(merged_region, actions)
+                    loss2 = ((costs - merged_costs) * logits2).mean()
                 else:
                     loss2 = torch.tensor(0)
 
@@ -104,46 +92,33 @@ class RegionAndSolution(object):
                     f.write(
                         'step={}, loss1={}, loss2={}, running_cost={}\n'.format(step, loss1.item(), loss2.item(),
                                                                                 running_cost))
-
                 if args['enable_gradient_clipping']:
                     grad_norms = self.clip_grad_norms(optimizer.param_groups, args['max_grad_norm'])
-                    # print(grad_norms)
                 optimizer.step()
-
-                # costs = torch.tensor([c.sum().item() for c in costss1]) + remain_costs
-
+                logits2 = []
+                merged_costs, merged_regionId, merged_region = [], [], []
+                regions0 = [[region[i].unsqueeze(0) for i in range(len(region))] for region in regions0]
                 for j in range(batch_size):
-                    regions[j] = remain_regions[j] + regions2[idx_regions[j] * 2:idx_regions[j + 1] * 2]  # [[(_route_len,3)]*route_num_in_a_region]*num_region, 50 points
-                #             plot_regions1(regions2,divide_num=2)
-
-                merged_costs1 = []  # [(region_cnt,)]*multiple
-                logits2 = []  # [(region_cnt,)]*multiple
-                merged_regions2 = []  # [[(route_len,3)]*route_cnt]*(region_num*multiple)
-                depot = [depot_data[i, 0, :2] for i in range(batch_size)]
-                depot = [torch.from_numpy(arr).view(2) for arr in depot]
-                for j in range(batch_size):
-                    costs2 = costs_of_regions(regions[j], depot[j])  # (2K,)
+                    regions[j] = regions0[idx_regions[j]:idx_regions[j + 1]]
+                    max_cost_region = costs[idx_regions[j]:idx_regions[j + 1]].argmax()
                     cov = select_model(regions[j])
-                    regions1, regions2, selected, logits2_i, merged_costs1_i, merged_regions2_i = select_model.merge_regions(
-                        regions[j], cov, costs2)  # selected.shape=(2K,)
-                    logits2.append(logits2_i)
-                    merged_costs1.append(merged_costs1_i)
-                    merged_regions2 = merged_regions2 + merged_regions2_i
-                    idx_regions[j + 1] = idx_regions[j] + len(regions1)
-                    remain_regions[j] = regions2
-                    remain_costs[j] = torch.sum(costs2) - torch.sum(costs2 * selected)
-                    regions0 = [torch.cat(r, 0) for r in regions1]  # [(cnt,3)]*merged_num
-                    init_regions[j] = regions0
-                logits2 = torch.cat(logits2)
-                merged_costs1 = torch.cat(merged_costs1).to(args['device'])
-                print('epoch{}, step{}:{}'.format(i, step, R.mean()))
+                    selected, logits_j = select_model.merge_regions(
+                        regions[j], cov, max_cost_region)
+                    logits2.append(logits_j)
+                    merged_regionId.append([max_cost_region.item(), selected])
+                    merged_region.append(
+                        torch.cat((init_regions[j][max_cost_region.item()], init_regions[j][selected]), dim=0))
+                    merged_costs.append(max(costs[idx_regions[j]:idx_regions[j + 1]][max_cost_region], costs[idx_regions[j]:idx_regions[j + 1]][selected]))
+                merged_costs = torch.stack(merged_costs)
+                logits2 = torch.stack(logits2)
+                print('epoch{}, step{}:{}'.format(i, step, costs.mean()))
                 # print('data{},step{}:{}'.format(batch_id, step, costs))
                 if step == args['iter_steps'] - 1:
                     # 记录loss
                     tb_logger.log_value('actor_loss', loss1, i)
                     tb_logger.log_value('critic_loss', critic_loss, i)
                     tb_logger.log_value('loss1 & loss2', loss, i)
-                    tb_logger.log_value('costs', R.mean(), i)
+                    tb_logger.log_value('costs', costs.mean(), i)
             if (args['checkpoint_epochs'] != 0 and i % args['checkpoint_epochs'] == 0) or i == max_epochs - 1:
                 print('Saving model and state...')
                 torch.save(
@@ -184,13 +159,6 @@ class RegionAndSolution(object):
         batch = {}
         batch['depot'] = nodes[0].to(device)
         batch['loc'] = nodes[1:, :, :2].to(device)
-        # batch['demand'] = nodes[1:, :, 2].to(device)
-
-        # if args.enable_random_rotate_train:
-        #     theta = torch.rand(nodes.shape[0]) * 2 * 3.1415926535
-        #     Q = rotate_matrix(theta, device)
-        #     batch['loc'] = rotate(batch['loc'], Q, batch['depot'])
-        #     # print('loc.shape=', batch['loc'].shape)
 
         R, loss1, critic_loss, actions, critic_est = self.a2cAgent.train(nodes, size_n.to(device), epoch, step, idx_regions, return_pi=True, cal_ll=cal_ll, tb_logger=tb_logger)
         return R, loss1, critic_loss, actions, critic_est

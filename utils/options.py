@@ -60,7 +60,7 @@ def ParseParams():
     parser.add_argument('--sampling', default=True,type=str2bool, help="whether to do the batch sampling or not")
     parser.add_argument('--n_samples', default=5, type=int, help='the number of samples for batch sampling')
     # regions——K-means
-    parser.add_argument('--near_K', default=5, type=int, help='the number of nearest neighbors to consider')
+    parser.add_argument('--near_K', default=2, type=int, help='the number of nearest neighbors to consider')
     parser.add_argument('--K', default=5, type=int, help='the number of output regions for initial K-means')
     parser.add_argument('--Kmeans_iter', default=20, type=int, help='the number of iterations for initial K-means')
     parser.add_argument('--beta', default=0.1, type=float, help='the parameter for distance')

@@ -49,69 +49,20 @@ class SelectModel(nn.Module):
         cov_matrix[idx, idx] = -np.inf
         return cov_matrix  # ()
 
-    def merge_regions(self, regions2, cov, costs2, sampling=True):
-        near_K = self.near_K
-        if near_K is None:
-            near_K = len(regions2) - 1
-        near_K = min(near_K, len(regions2) - 1)
-        selected = np.zeros(cov.shape[0])
-        regions1 = []
-        merged_regions2 = []
-        costs1 = []
-        logits = []
-
+    def merge_regions(self, regions2, cov, merged_region, sampling=True):
+        # 选取merge的region（cost最大的）
         mean = self.mean_regions_points(regions2)  # (num_region,3)
         dist_square = np.sum((mean[:, None, :2] - mean[None, :, :2]) ** 2, -1)
-        #         print('dist_square.shape=',dist_square.shape)
-        arg_near = np.argsort(dist_square, -1)[:, 1:(near_K + 1)]  # (regions2_num,near_K)
-        cov_k = cov[np.arange(len(regions2))[:, None], arg_near]  # (regions2_num,near_K)
+        arg_near = np.argsort(dist_square, -1)[:, 1:self.near_K + 1]
+        cov_k = cov[np.arange(len(regions2))[:, None], arg_near][merged_region]  # (regions2_num,near_K)
         cov_k = torch.nn.functional.softmax(cov_k, -1)
-        # cov_matrix[idx,idx]=0
-        # print('cov2=',cov)
+        # print(merged_region, cov_k)
         if sampling:
-            s = torch.multinomial(cov_k, 5)  # (regions2_num, )
+            selected = torch.multinomial(cov_k, 1)  # (regions2_num, )
         else:
-            s = torch.argmax(cov_k, -1)
-        s1 = s  # (regions2_num, )
-        # s = arg_near[np.arange(len(regions2)), s.cpu()]  # (regions2_num, )
-        s = [a_n[s_] for a_n, s_ in zip(arg_near, s.cpu())]
-
-        ranges = list(range(cov_k.shape[0]))
-        random.shuffle(ranges)
-        for i in ranges:
-            if selected[i]:
-                continue
-            has_topk = False
-            # 找near_K中未被选中的
-            for j in range(near_K):
-                if not selected[s[i][j].item()]:
-                    has_topk = True
-                    break
-            # pass if not the topk of this region all selected
-            if not has_topk:
-                continue
-            selected[i] = 1
-            selected[s[i][j].item()] = 1
-            regions1.append(regions2[i] + regions2[s[i][j].item()])
-            merged_regions2.append(regions2[i])
-            merged_regions2.append(regions2[s[i][j].item()])
-            costs1.append(costs2[i] + costs2[s[i][j].item()])
-            logits.append(torch.log(cov_k[i, s1[i][j].item()]))
-        regions3 = []
-        pre_re = -1
-        for i in range(cov.shape[0]):
-            if not selected[i]:
-                if pre_re == -1:
-                    pre_re = i
-                else:
-                    regions1.append(regions2[pre_re] + regions2[i])
-                    costs1.append(costs2[pre_re] + costs2[i])
-                    logits.append(torch.log(cov[pre_re, i]))
-                    merged_regions2.append(regions2[pre_re])
-                    merged_regions2.append(regions2[i])
-                    pre_re = -1
-                selected[i] = 1
-        return regions1, regions3, selected, torch.stack(logits), torch.tensor(costs1), merged_regions2
+            selected = torch.argmax(cov_k, 1)
+        logits = torch.log(cov_k[selected[0].item()])
+        return arg_near[merged_region][selected].item(), logits
 
 
     def mean_regions_points(self, regions1):
