@@ -132,15 +132,6 @@ class A2CAgent(object):
         # 记录loss
         tb_logger.log_value('actor_loss', actor_loss, epoch)
         tb_logger.log_value('critic_loss', critic_loss, epoch)
-        # actor_optim.zero_grad()
-        # actor_loss.backward()
-        # 记录grad_norms
-        # grad_norms = self.clip_grad_norms(actor.parameters(), args['max_grad_norm'])
-        # grad_norms, grad_norms_clipped = grad_norms
-        # grad_norms = torch.nn.utils.clip_grad_norm_(actor.parameters(), args['max_grad_norm'])
-        # if not args['no_tensorboard']:
-        #     tb_logger.log_value('grad_norm', grad_norms, i)
-        # actor_optim.step()
         critic_optim.zero_grad()
         critic_loss.backward(retain_graph=True)
         torch.nn.utils.clip_grad_norm_(critic.parameters(), args['max_grad_norm'])
